@@ -188,8 +188,12 @@ def summarize_text(text: str) -> Optional[dict]:
 
     # Verifica dacă e nevoie de chunking
     if len(text) > 6000:
+        first_part = text[:3000]
+        last_part = text[-3000:]
+        text = first_part + '\n...\n' + last_part
         print(f"   Text mare ({len(text)} caractere), se împarte în bucăți de 6000...")
         chunks = _split_into_chunks(text, chunk_size=6000)
+        chunks = chunks[:3]  # Limitează la maxim 3 chunks
         print(f"   Creat {len(chunks)} bucată(i)")
 
         chunk_summaries = []

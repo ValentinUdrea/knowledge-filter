@@ -1,3 +1,7 @@
+import os
+os.environ['OLLAMA_NUM_PARALLEL'] = '3'
+os.environ['OLLAMA_NUM_THREADS'] = '8'
+
 import re
 from typing import Optional, List, Dict
 from pathlib import Path
