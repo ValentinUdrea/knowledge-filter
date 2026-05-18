@@ -10,6 +10,7 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from scraper import scrape_url
 from reader import read_file
 from summarizer import summarize_text, format_summary
+from book_analyzer import analyze_book
 
 
 class KnowledgeFilterApp:
@@ -25,6 +26,7 @@ class KnowledgeFilterApp:
 
         self.selected_file = None
         self.summary_dict = None
+        self.book_analysis_result = None
         self.setup_ui()
 
     def setup_ui(self):
@@ -79,7 +81,18 @@ class KnowledgeFilterApp:
             height=45,
             fg_color="#1f6aa5"
         )
-        self.analyze_button.pack(fill="x", pady=(0, 15))
+        self.analyze_button.pack(fill="x", pady=(0, 10))
+
+        # Buton "Analizează Carte"
+        self.analyze_book_button = ctk.CTkButton(
+            input_frame,
+            text="📚 Analizează Carte",
+            command=self.analyze_book_handler,
+            font=("Arial", 12, "bold"),
+            height=45,
+            fg_color="#7c3aed"
+        )
+        self.analyze_book_button.pack(fill="x", pady=(0, 15))
 
         # Separator
         separator = ctk.CTkFrame(self.root, height=2, fg_color="gray30")
@@ -223,6 +236,69 @@ class KnowledgeFilterApp:
         """Stochează rezumatul pentru export"""
         self.summary_dict = summary_dict
 
+    def analyze_book_handler(self):
+        """Declanșează analiza unei cărți (PDF) într-un thread separat"""
+        if not self.selected_file:
+            messagebox.showwarning(
+                "Input lipsă",
+                "Te rog selectează un fișier PDF"
+            )
+            return
+
+        # Dezactivează butoanele în timp ce se procesează
+        self.analyze_button.configure(state="disabled")
+        self.analyze_book_button.configure(state="disabled")
+        self.export_txt_button.configure(state="disabled")
+        self.export_pdf_button.configure(state="disabled")
+        self.status_label.configure(text="⏳ Se citește cartea...", text_color="orange")
+        self.output_text.delete("1.0", "end")
+
+        # Rulează în thread separat pentru a nu bloca UI
+        thread = threading.Thread(target=self._analyze_book_thread, args=(self.selected_file,))
+        thread.daemon = True
+        thread.start()
+
+    def _analyze_book_thread(self, file_path):
+        """Execută analiza cărții pe un thread separat"""
+        try:
+            self.update_status("📖 Se citește PDF-ul...", "white")
+
+            # Apelează analyze_book
+            result = analyze_book(file_path)
+
+            if not result:
+                self.update_status("❌ Eroare: Nu s-a putut analiza cartea", "red")
+                self.root.after(0, lambda: self.output_text.insert("end", "❌ Eroare: Nu s-a putut analiza cartea. Asigură-te că Ollama rulează."))
+                return
+
+            # Afișează raportul complet
+            self.update_status("📋 Se genereaza raportul final...", "white")
+            self.root.after(0, lambda: self.output_text.insert("end", result['full_report']))
+
+            # Stochează rezultatul pentru export
+            self.root.after(0, lambda: self._store_book_analysis(result))
+
+            # Actualizează status
+            chapters_completed = sum(1 for ch in result['chapters'] if ch['status'] == 'completed')
+            self.update_status(f"✓ Analiza cărții completă ({chapters_completed}/{result['total_chapters']} capitole)", "green")
+
+            # Activează butoanele de export
+            self.root.after(0, lambda: self.export_txt_button.configure(state="normal"))
+            self.root.after(0, lambda: self.export_pdf_button.configure(state="normal"))
+
+        except Exception as e:
+            error_msg = f"❌ Eroare neașteptată: {str(e)}"
+            self.update_status(error_msg, "red")
+            self.root.after(0, lambda: self.output_text.insert("end", error_msg))
+        finally:
+            # Reactivează butoanele
+            self.root.after(0, lambda: self.analyze_button.configure(state="normal"))
+            self.root.after(0, lambda: self.analyze_book_button.configure(state="normal"))
+
+    def _store_book_analysis(self, result):
+        """Stochează rezultatul analizei cărții pentru export"""
+        self.book_analysis_result = result
+
     def export_txt_result(self):
         """Deschide dialog pentru salvarea rezumatului ca TXT"""
         file_path = filedialog.asksaveasfilename(
@@ -242,7 +318,7 @@ class KnowledgeFilterApp:
 
     def export_pdf_result(self):
         """Deschide dialog pentru salvarea rezumatului ca PDF"""
-        if not self.summary_dict:
+        if not self.summary_dict and not self.book_analysis_result:
             messagebox.showerror("Eroare", "Nu există rezumat de exportat")
             return
 
@@ -254,7 +330,10 @@ class KnowledgeFilterApp:
 
         if file_path:
             try:
-                self._generate_pdf(file_path, self.summary_dict)
+                if self.book_analysis_result:
+                    self._generate_book_pdf(file_path, self.book_analysis_result)
+                else:
+                    self._generate_pdf(file_path, self.summary_dict)
                 messagebox.showinfo("Succes", f"Rezumatul a fost salvat în:\n{file_path}")
             except Exception as e:
                 messagebox.showerror("Eroare", f"Nu s-a putut salva fișierul PDF:\n{str(e)}")
@@ -329,6 +408,107 @@ class KnowledgeFilterApp:
 
         summary_text = Paragraph(summary_dict['summary'], text_style)
         story.append(summary_text)
+
+        # Build PDF
+        doc.build(story)
+
+    def _generate_book_pdf(self, file_path, book_result):
+        """Generează un PDF cu raportul analizei cărții"""
+        doc = SimpleDocTemplate(file_path, pagesize=letter, rightMargin=0.75*inch, leftMargin=0.75*inch)
+        styles = getSampleStyleSheet()
+        story = []
+
+        # Stil pentru titlu carte
+        title_style = ParagraphStyle(
+            'BookTitle',
+            parent=styles['Heading1'],
+            fontSize=24,
+            textColor='#1f6aa5',
+            spaceAfter=12,
+            alignment=TA_CENTER,
+            fontName='Helvetica-Bold'
+        )
+
+        # Stil pentru titlu capitol
+        chapter_style = ParagraphStyle(
+            'ChapterTitle',
+            parent=styles['Heading2'],
+            fontSize=14,
+            textColor='#7c3aed',
+            spaceAfter=8,
+            spaceBefore=12,
+            fontName='Helvetica-Bold'
+        )
+
+        # Stil pentru idei cheie
+        ideas_style = ParagraphStyle(
+            'IdeasTitle',
+            parent=styles['Heading3'],
+            fontSize=11,
+            textColor='#17a657',
+            spaceAfter=6,
+            spaceBefore=6,
+            fontName='Helvetica-Bold'
+        )
+
+        # Stil pentru text normal
+        text_style = ParagraphStyle(
+            'NormalText',
+            parent=styles['Normal'],
+            fontSize=10,
+            alignment=TA_LEFT,
+            fontName='Helvetica',
+            spaceAfter=4
+        )
+
+        # Stil pentru bullet points
+        bullet_style = ParagraphStyle(
+            'BulletText',
+            parent=styles['Normal'],
+            fontSize=10,
+            alignment=TA_LEFT,
+            fontName='Helvetica',
+            leftIndent=20,
+            spaceAfter=3
+        )
+
+        # Titlu carte
+        title = Paragraph(f"📖 {book_result['book_title']}", title_style)
+        story.append(title)
+
+        chapters_info = Paragraph(f"Total capitole: {book_result['total_chapters']}", text_style)
+        story.append(chapters_info)
+        story.append(Spacer(1, 0.2*inch))
+
+        # Pentru fiecare capitol
+        for chapter in book_result['chapters']:
+            if chapter['summary']:
+                # Titlu capitol
+                chapter_title = Paragraph(f"Capitol {chapter['number']}: {chapter['title']}", chapter_style)
+                story.append(chapter_title)
+
+                summary_data = chapter['summary']
+
+                # Titlu rezumat
+                summary_title = Paragraph(summary_data.get('title', 'Rezumat'), ideas_style)
+                story.append(summary_title)
+
+                # Idei cheie
+                ideas_label = Paragraph("Idei cheie:", ideas_style)
+                story.append(ideas_label)
+
+                for idea in summary_data.get('key_ideas', []):
+                    bullet = Paragraph(f"• {idea}", bullet_style)
+                    story.append(bullet)
+
+                story.append(Spacer(1, 0.1*inch))
+
+                # Rezumat text
+                summary_text = Paragraph(summary_data.get('summary', ''), text_style)
+                story.append(summary_text)
+
+                story.append(Spacer(1, 0.15*inch))
+                story.append(PageBreak())
 
         # Build PDF
         doc.build(story)
